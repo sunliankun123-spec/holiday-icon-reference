@@ -49,14 +49,23 @@ def _try_fetch_image(url: str, referer: str = "") -> tuple[bytes, str] | None:
         return None
 
 
+def _pinimg_size_fallback(url: str) -> str:
+    if "pinimg.com" not in url:
+        return url
+    return url.replace("/originals/", "/736x/")
+
+
 def _download_preview(url: str) -> str | None:
     if not url:
         return None
     try:
         fetched = _try_fetch_image(url, referer="https://www.pinterest.com/")
+        if not fetched:
+            fetched = _try_fetch_image(_pinimg_size_fallback(url), referer="https://www.pinterest.com/")
         # Some hosts block direct requests; image proxy fallback.
         if not fetched:
-            proxy_url = f"https://wsrv.nl/?url={quote(url, safe='')}"
+            raw_target = url.replace("https://", "").replace("http://", "")
+            proxy_url = f"https://wsrv.nl/?url={quote(raw_target, safe='')}&n=-1"
             fetched = _try_fetch_image(proxy_url)
         if not fetched:
             return None
@@ -93,6 +102,8 @@ def write_excel(rows: Iterable[dict], output_path: Path) -> Path:
     ws.append(["theme", "element", "image_index", "search_query", "source", "image_preview"])
 
     temp_files: list[str] = []
+    embedded_count = 0
+    failed_count = 0
     futures = {}
     render_mode = bool(os.getenv("RENDER") or os.getenv("RENDER_EXTERNAL_URL"))
     with ThreadPoolExecutor(max_workers=2 if render_mode else 8) as executor:
@@ -113,12 +124,14 @@ def write_excel(rows: Iterable[dict], output_path: Path) -> Path:
             row_idx = futures[future]
             temp_path = future.result()
             if not temp_path:
+                failed_count += 1
                 continue
             temp_files.append(temp_path)
             img = XLImage(temp_path)
             img.width, img.height = _fit_size(img.width, img.height, PREVIEW_MAX_PX)
             ws.add_image(img, f"F{row_idx}")
             ws.row_dimensions[row_idx].height = PREVIEW_ROW_HEIGHT_PT
+            embedded_count += 1
 
     ws.column_dimensions["A"].width = 20
     ws.column_dimensions["B"].width = 26
@@ -147,6 +160,12 @@ def write_excel(rows: Iterable[dict], output_path: Path) -> Path:
     for row in ws2.iter_rows(min_row=1, max_row=ws2.max_row, min_col=1, max_col=2):
         for cell in row:
             cell.alignment = center
+
+    ws3 = wb.create_sheet(title="export_report")
+    ws3.append(["metric", "value"])
+    ws3.append(["total_rows", len(rows)])
+    ws3.append(["embedded_images", embedded_count])
+    ws3.append(["failed_images", failed_count])
 
     wb.save(output_path)
     for temp_file in temp_files:

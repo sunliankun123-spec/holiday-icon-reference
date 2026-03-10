@@ -97,6 +97,42 @@ def _collect_pinterest_urls_http(query: str, limit: int) -> list[str]:
     return out
 
 
+def _collect_google_urls_http(query: str, limit: int) -> list[str]:
+    encoded = requests.utils.quote(query, safe="")
+    url = f"https://www.google.com/search?tbm=isch&q={encoded}"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=(6, 12))
+        resp.raise_for_status()
+        html = resp.text
+    except Exception:
+        return []
+
+    # Capture common direct image links from JSON/HTML payloads.
+    candidates = re.findall(r"https://[^\"'\\s<>]+\\.(?:jpg|jpeg|png|webp)", html, flags=re.IGNORECASE)
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in candidates:
+        if "gstatic.com" in raw:
+            continue
+        if any(x in raw.lower() for x in ("sprite", "logo", "iconfont", "set", "pack", "collection")):
+            continue
+        cleaned = raw.split("?")[0]
+        if cleaned in seen:
+            continue
+        seen.add(cleaned)
+        out.append(cleaned)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _collect_for_element_render(theme: str, element: str, limit: int) -> tuple[str, list[str], str]:
     queries = [
         f"{theme} {element} c4d 3d cute single icon isolated -set -pack -collection",
@@ -109,6 +145,8 @@ def _collect_for_element_render(theme: str, element: str, limit: int) -> tuple[s
 
     for query in queries:
         urls = _collect_pinterest_urls_http(query, limit=limit)
+        if len(urls) < limit:
+            urls.extend(_collect_google_urls_http(query, limit=limit))
         if urls:
             chosen_query = query
         for u in urls:
