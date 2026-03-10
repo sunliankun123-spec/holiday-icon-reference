@@ -9,6 +9,7 @@ from typing import Callable
 from playwright.async_api import async_playwright
 import requests
 
+from .duckduckgo_images import collect_duckduckgo_urls_http
 from .elements import build_50_elements
 from .excel_export import write_excel
 from .google_images import collect_google_image_urls
@@ -153,6 +154,8 @@ def _collect_for_element_render(theme: str, element: str, limit: int) -> tuple[s
         urls = _collect_pinterest_urls_http(query, limit=limit)
         if len(urls) < limit:
             urls.extend(_collect_google_urls_http(query, limit=limit))
+        if len(urls) < limit:
+            urls.extend(collect_duckduckgo_urls_http(query, limit=limit))
         if urls:
             chosen_query = query
         for u in urls:
