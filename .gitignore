@@ -1,0 +1,12 @@
+# Python env and cache
+.venv/
+__pycache__/
+*.pyc
+
+# Build/runtime outputs
+app/outputs/
+*.log
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
