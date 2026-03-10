@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from pathlib import Path
 from typing import Callable
 
 from playwright.async_api import async_playwright
+import requests
 
 from .elements import build_50_elements
 from .excel_export import write_excel
 from .google_images import collect_google_image_urls
-from .pinterest import collect_pinterest_urls
+from .pinterest import collect_pinterest_urls, _canonicalize_url
 
 
 ProgressCallback = Callable[[str, int, int, str], None]
@@ -63,6 +65,60 @@ def _resolve_chromium_executable() -> str | None:
                 return str(matches[-1])
 
     return None
+
+
+def _collect_pinterest_urls_http(query: str, limit: int) -> list[str]:
+    encoded = requests.utils.quote(query, safe="")
+    url = f"https://www.pinterest.com/search/pins/?q={encoded}"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=(6, 12))
+        resp.raise_for_status()
+        html = resp.text
+    except Exception:
+        return []
+
+    candidates = re.findall(r"https://i\.pinimg\.com/[^\s\"'<>]+", html)
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in candidates:
+        normalized = _canonicalize_url(raw)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _collect_for_element_render(theme: str, element: str, limit: int) -> tuple[str, list[str], str]:
+    queries = [
+        f"{theme} {element} c4d 3d cute single icon isolated -set -pack -collection",
+        f"{theme} {element} 3d kawaii icon single object clean background",
+        f"{element} c4d 3d icon single object",
+    ]
+    merged: list[str] = []
+    seen: set[str] = set()
+    chosen_query = queries[0]
+
+    for query in queries:
+        urls = _collect_pinterest_urls_http(query, limit=limit)
+        if urls:
+            chosen_query = query
+        for u in urls:
+            if u in seen:
+                continue
+            seen.add(u)
+            merged.append(u)
+            if len(merged) >= limit:
+                return element, merged, chosen_query
+    return element, merged, chosen_query
 
 
 async def _collect_for_element(context, theme: str, element: str, limit: int) -> tuple[str, list[str], str]:
@@ -125,47 +181,57 @@ async def generate_theme_excel(
     if fallback_executable:
         launch_kwargs["executable_path"] = fallback_executable
 
-    async with async_playwright() as pw:
-        if progress_callback:
-            progress_callback("starting", 0, total, "launching_browser")
-
-        browser = await asyncio.wait_for(pw.chromium.launch(**launch_kwargs), timeout=45)
-        context = await asyncio.wait_for(browser.new_context(), timeout=20)
-        if render_mode:
-            # Reduce memory usage on free-tier containers.
-            await context.route(
-                "**/*",
-                lambda route, request: route.abort()
-                if request.resource_type in {"image", "media", "font", "stylesheet"}
-                else route.continue_(),
-            )
-
+    if render_mode:
         if progress_callback:
             progress_callback("collecting", 0, total, "")
-
-        semaphore = asyncio.Semaphore(1 if render_mode else 2)
+        all_results = []
         done = 0
+        for element in elements:
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(_collect_for_element_render, theme, element, per_element_limit),
+                    timeout=45,
+                )
+            except Exception:
+                result = (element, [], f"{theme} {element} c4d 3d icon")
+            all_results.append(result)
+            done += 1
+            if progress_callback:
+                progress_callback("collecting", done, total, element)
+    else:
+        async with async_playwright() as pw:
+            if progress_callback:
+                progress_callback("starting", 0, total, "launching_browser")
 
-        async def worker(element: str):
-            nonlocal done
-            async with semaphore:
-                try:
-                    result = await asyncio.wait_for(
-                        _collect_for_element(context, theme, element, per_element_limit),
-                        timeout=95,
-                    )
-                except Exception:
-                    # Timeout or site-level blocking should not freeze the entire batch.
-                    result = (element, [], f"{theme} {element} c4d 3d icon")
-                done += 1
-                if progress_callback:
-                    progress_callback("collecting", done, total, element)
-                return result
+            browser = await asyncio.wait_for(pw.chromium.launch(**launch_kwargs), timeout=45)
+            context = await asyncio.wait_for(browser.new_context(), timeout=20)
 
-        tasks = [asyncio.create_task(worker(element)) for element in elements]
-        all_results = await asyncio.gather(*tasks)
-        await context.close()
-        await browser.close()
+            if progress_callback:
+                progress_callback("collecting", 0, total, "")
+
+            semaphore = asyncio.Semaphore(2)
+            done = 0
+
+            async def worker(element: str):
+                nonlocal done
+                async with semaphore:
+                    try:
+                        result = await asyncio.wait_for(
+                            _collect_for_element(context, theme, element, per_element_limit),
+                            timeout=95,
+                        )
+                    except Exception:
+                        # Timeout or site-level blocking should not freeze the entire batch.
+                        result = (element, [], f"{theme} {element} c4d 3d icon")
+                    done += 1
+                    if progress_callback:
+                        progress_callback("collecting", done, total, element)
+                    return result
+
+            tasks = [asyncio.create_task(worker(element)) for element in elements]
+            all_results = await asyncio.gather(*tasks)
+            await context.close()
+            await browser.close()
 
     global_seen: set[str] = set()
     for element, urls, query in all_results:
