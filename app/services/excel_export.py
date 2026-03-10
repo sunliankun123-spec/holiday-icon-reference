@@ -6,6 +6,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import quote
 
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XLImage
@@ -26,52 +27,54 @@ def _fit_size(width: int, height: int, max_px: int) -> tuple[int, int]:
     return max(1, int(width * ratio)), max(1, int(height * ratio))
 
 
-def _download_preview(url: str) -> str | None:
-    if not url:
-        return None
+def _try_fetch_image(url: str, referer: str = "") -> tuple[bytes, str] | None:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    }
+    if referer:
+        headers["Referer"] = referer
+
     try:
-        resp = requests.get(
-            url,
-            timeout=(10, 20),
-            allow_redirects=True,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                )
-            },
-        )
+        resp = requests.get(url, timeout=(10, 20), allow_redirects=True, headers=headers)
         resp.raise_for_status()
         content_type = resp.headers.get("content-type", "").lower()
         if not content_type.startswith("image/"):
             return None
+        return resp.content, content_type
+    except Exception:
+        return None
 
-        raw = resp.content
+
+def _download_preview(url: str) -> str | None:
+    if not url:
+        return None
+    try:
+        fetched = _try_fetch_image(url, referer="https://www.pinterest.com/")
+        # Some hosts block direct requests; image proxy fallback.
+        if not fetched:
+            proxy_url = f"https://wsrv.nl/?url={quote(url, safe='')}"
+            fetched = _try_fetch_image(proxy_url)
+        if not fetched:
+            return None
+
+        raw, content_type = fetched
         render_mode = bool(os.getenv("RENDER") or os.getenv("RENDER_EXTERNAL_URL"))
         content_main = content_type.split(";")[0].strip()
-        ext_map = {
-            "image/jpeg": "jpg",
-            "image/jpg": "jpg",
-            "image/png": "png",
-            "image/webp": "webp",
-            "image/gif": "gif",
-            "image/bmp": "bmp",
-        }
-        ext = ext_map.get(content_main, "jpg")
 
-        # Render free instance has tight memory; normalize oversized images.
-        if render_mode and ext in {"jpg", "png", "webp", "bmp"}:
-            try:
-                img = PILImage.open(io.BytesIO(raw)).convert("RGB")
-                img.thumbnail((RENDER_IMG_MAX_SIDE, RENDER_IMG_MAX_SIDE))
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=90, optimize=True)
-                raw = buf.getvalue()
-                ext = "jpg"
-            except Exception:
-                pass
+        # Always convert to JPEG so openpyxl can insert reliably.
+        img = PILImage.open(io.BytesIO(raw)).convert("RGB")
+        if render_mode:
+            img.thumbnail((RENDER_IMG_MAX_SIDE, RENDER_IMG_MAX_SIDE))
+        buf = io.BytesIO()
+        jpeg_quality = 90 if render_mode else 95
+        img.save(buf, format="JPEG", quality=jpeg_quality, optimize=True)
+        raw = buf.getvalue()
 
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}")
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
         tmp.write(raw)
         tmp.flush()
         tmp.close()
