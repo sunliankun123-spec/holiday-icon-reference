@@ -26,6 +26,45 @@ def _sanitize_filename(text: str) -> str:
     return "".join(keep)[:60] or "theme"
 
 
+def _resolve_chromium_executable() -> str | None:
+    # Windows local dev fallback.
+    local_app_data = os.getenv("LOCALAPPDATA", "")
+    win_candidate = Path(local_app_data) / "ms-playwright" / "chromium-1208" / "chrome-win64" / "chrome.exe"
+    if win_candidate.exists():
+        return str(win_candidate)
+
+    # Linux Render/cache fallback.
+    linux_roots = [
+        Path("/opt/render/.cache/ms-playwright"),
+        Path.home() / ".cache" / "ms-playwright",
+        Path("~/.cache/ms-playwright").expanduser(),
+    ]
+    patterns = ("chromium-*/chrome-linux/chrome", "chromium-*/chrome-linux64/chrome")
+    for root in linux_roots:
+        if not root.exists():
+            continue
+        for pattern in patterns:
+            matches = sorted(root.glob(pattern))
+            if matches:
+                return str(matches[-1])
+
+    # PLAYWRIGHT_BROWSERS_PATH=0 fallback (local browsers in package directory).
+    pkg_root = Path(__file__).resolve().parents[3]
+    local_browser_roots = [
+        pkg_root / ".local-browsers",
+        pkg_root / "playwright" / ".local-browsers",
+    ]
+    for root in local_browser_roots:
+        if not root.exists():
+            continue
+        for pattern in patterns:
+            matches = sorted(root.glob(pattern))
+            if matches:
+                return str(matches[-1])
+
+    return None
+
+
 async def _collect_for_element(context, theme: str, element: str, limit: int) -> tuple[str, list[str], str]:
     page = await context.new_page()
     try:
@@ -72,11 +111,10 @@ async def generate_theme_excel(
     if progress_callback:
         progress_callback("starting", 0, total, "")
 
-    local_app_data = os.getenv("LOCALAPPDATA", "")
-    fallback_executable = Path(local_app_data) / "ms-playwright" / "chromium-1208" / "chrome-win64" / "chrome.exe"
     launch_kwargs = {"headless": True}
-    if fallback_executable.exists():
-        launch_kwargs["executable_path"] = str(fallback_executable)
+    fallback_executable = _resolve_chromium_executable()
+    if fallback_executable:
+        launch_kwargs["executable_path"] = fallback_executable
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(**launch_kwargs)
