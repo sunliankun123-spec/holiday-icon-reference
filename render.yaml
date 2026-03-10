@@ -10,5 +10,4 @@ services:
     buildCommand: |
       pip install --upgrade pip
       pip install -r app/requirements.txt
-      PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install chromium
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
