@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -8,11 +10,13 @@ from typing import Iterable
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment
+from PIL import Image as PILImage
 import requests
 
 PREVIEW_MAX_PX = 220
 PREVIEW_COL_WIDTH = 34
 PREVIEW_ROW_HEIGHT_PT = 170
+RENDER_IMG_MAX_SIDE = 900
 
 
 def _fit_size(width: int, height: int, max_px: int) -> tuple[int, int]:
@@ -43,6 +47,7 @@ def _download_preview(url: str) -> str | None:
             return None
 
         raw = resp.content
+        render_mode = bool(os.getenv("RENDER") or os.getenv("RENDER_EXTERNAL_URL"))
         content_main = content_type.split(";")[0].strip()
         ext_map = {
             "image/jpeg": "jpg",
@@ -53,6 +58,19 @@ def _download_preview(url: str) -> str | None:
             "image/bmp": "bmp",
         }
         ext = ext_map.get(content_main, "jpg")
+
+        # Render free instance has tight memory; normalize oversized images.
+        if render_mode and ext in {"jpg", "png", "webp", "bmp"}:
+            try:
+                img = PILImage.open(io.BytesIO(raw)).convert("RGB")
+                img.thumbnail((RENDER_IMG_MAX_SIDE, RENDER_IMG_MAX_SIDE))
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=90, optimize=True)
+                raw = buf.getvalue()
+                ext = "jpg"
+            except Exception:
+                pass
+
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}")
         tmp.write(raw)
         tmp.flush()
@@ -73,7 +91,8 @@ def write_excel(rows: Iterable[dict], output_path: Path) -> Path:
 
     temp_files: list[str] = []
     futures = {}
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    render_mode = bool(os.getenv("RENDER") or os.getenv("RENDER_EXTERNAL_URL"))
+    with ThreadPoolExecutor(max_workers=2 if render_mode else 8) as executor:
         for row_idx, row in enumerate(rows, start=2):
             ws.append(
                 [

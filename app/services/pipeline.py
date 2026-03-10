@@ -104,6 +104,7 @@ async def generate_theme_excel(
     per_element_limit: int = 10,
     element_limit: int = 50,
 ) -> Path:
+    render_mode = bool(os.getenv("RENDER") or os.getenv("RENDER_EXTERNAL_URL"))
     elements = build_50_elements(theme)[:element_limit]
     total = len(elements)
     rows: list[dict] = []
@@ -112,6 +113,14 @@ async def generate_theme_excel(
         progress_callback("starting", 0, total, "")
 
     launch_kwargs = {"headless": True}
+    if render_mode:
+        launch_kwargs["args"] = [
+            "--disable-dev-shm-usage",
+            "--no-zygote",
+            "--disable-gpu",
+            "--single-process",
+        ]
+        launch_kwargs["chromium_sandbox"] = False
     fallback_executable = _resolve_chromium_executable()
     if fallback_executable:
         launch_kwargs["executable_path"] = fallback_executable
@@ -122,11 +131,19 @@ async def generate_theme_excel(
 
         browser = await asyncio.wait_for(pw.chromium.launch(**launch_kwargs), timeout=45)
         context = await asyncio.wait_for(browser.new_context(), timeout=20)
+        if render_mode:
+            # Reduce memory usage on free-tier containers.
+            await context.route(
+                "**/*",
+                lambda route, request: route.abort()
+                if request.resource_type in {"image", "media", "font", "stylesheet"}
+                else route.continue_(),
+            )
 
         if progress_callback:
             progress_callback("collecting", 0, total, "")
 
-        semaphore = asyncio.Semaphore(2)
+        semaphore = asyncio.Semaphore(1 if render_mode else 2)
         done = 0
 
         async def worker(element: str):
