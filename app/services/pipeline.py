@@ -117,16 +117,29 @@ async def generate_theme_excel(
         launch_kwargs["executable_path"] = fallback_executable
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(**launch_kwargs)
-        context = await browser.new_context()
+        if progress_callback:
+            progress_callback("starting", 0, total, "launching_browser")
 
-        semaphore = asyncio.Semaphore(4)
+        browser = await asyncio.wait_for(pw.chromium.launch(**launch_kwargs), timeout=45)
+        context = await asyncio.wait_for(browser.new_context(), timeout=20)
+
+        if progress_callback:
+            progress_callback("collecting", 0, total, "")
+
+        semaphore = asyncio.Semaphore(2)
         done = 0
 
         async def worker(element: str):
             nonlocal done
             async with semaphore:
-                result = await _collect_for_element(context, theme, element, per_element_limit)
+                try:
+                    result = await asyncio.wait_for(
+                        _collect_for_element(context, theme, element, per_element_limit),
+                        timeout=95,
+                    )
+                except Exception:
+                    # Timeout or site-level blocking should not freeze the entire batch.
+                    result = (element, [], f"{theme} {element} c4d 3d icon")
                 done += 1
                 if progress_callback:
                     progress_callback("collecting", done, total, element)
