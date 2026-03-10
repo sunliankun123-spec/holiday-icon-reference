@@ -38,21 +38,34 @@ def _try_fetch_image(url: str, referer: str = "") -> tuple[bytes, str] | None:
     if referer:
         headers["Referer"] = referer
 
-    try:
-        resp = requests.get(url, timeout=(10, 20), allow_redirects=True, headers=headers)
-        resp.raise_for_status()
-        content_type = resp.headers.get("content-type", "").lower()
-        if not content_type.startswith("image/"):
-            return None
-        return resp.content, content_type
-    except Exception:
-        return None
+    attempts = 3
+    for idx in range(attempts):
+        try:
+            resp = requests.get(
+                url,
+                timeout=(10, 20),
+                allow_redirects=True,
+                headers=headers,
+                verify=False,
+            )
+            if resp.status_code >= 400:
+                continue
+            content_type = resp.headers.get("content-type", "").lower()
+            if not content_type.startswith("image/"):
+                continue
+            return resp.content, content_type
+        except Exception:
+            if idx == attempts - 1:
+                return None
+    return None
 
 
 def _pinimg_size_fallback(url: str) -> str:
     if "pinimg.com" not in url:
         return url
-    return url.replace("/originals/", "/736x/")
+    if "/originals/" in url:
+        return url.replace("/originals/", "/736x/")
+    return url
 
 
 def _download_preview(url: str) -> str | None:
@@ -62,10 +75,14 @@ def _download_preview(url: str) -> str | None:
         fetched = _try_fetch_image(url, referer="https://www.pinterest.com/")
         if not fetched:
             fetched = _try_fetch_image(_pinimg_size_fallback(url), referer="https://www.pinterest.com/")
+        if not fetched and "pinimg.com" in url:
+            fetched = _try_fetch_image(url.replace("/originals/", "/564x/"), referer="https://www.pinterest.com/")
         # Some hosts block direct requests; image proxy fallback.
         if not fetched:
-            raw_target = url.replace("https://", "").replace("http://", "")
-            proxy_url = f"https://wsrv.nl/?url={quote(raw_target, safe='')}&n=-1"
+            proxy_url = f"https://wsrv.nl/?url={quote(url, safe='')}&n=-1"
+            fetched = _try_fetch_image(proxy_url)
+        if not fetched:
+            proxy_url = f"https://images.weserv.nl/?url={quote(url, safe='')}&n=-1"
             fetched = _try_fetch_image(proxy_url)
         if not fetched:
             return None

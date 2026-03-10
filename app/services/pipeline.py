@@ -84,6 +84,10 @@ def _collect_pinterest_urls_http(query: str, limit: int) -> list[str]:
         return []
 
     candidates = re.findall(r"https://i\.pinimg\.com/[^\s\"'<>]+", html)
+    escaped = re.findall(r"https:\\/\\/i\.pinimg\.com\\/[^\s\"'<>]+", html)
+    candidates.extend([e.replace("\\/", "/") for e in escaped])
+    json_style = re.findall(r"\"url\"\s*:\s*\"(https://i\.pinimg\.com/[^\"]+)\"", html)
+    candidates.extend(json_style)
     out: list[str] = []
     seen: set[str] = set()
     for raw in candidates:
@@ -116,6 +120,8 @@ def _collect_google_urls_http(query: str, limit: int) -> list[str]:
 
     # Capture common direct image links from JSON/HTML payloads.
     candidates = re.findall(r"https://[^\"'\\s<>]+\\.(?:jpg|jpeg|png|webp)", html, flags=re.IGNORECASE)
+    escaped = re.findall(r"https:\\/\\/[^\"'\\s<>]+\\.(?:jpg|jpeg|png|webp)", html, flags=re.IGNORECASE)
+    candidates.extend([e.replace("\\/", "/") for e in escaped])
     out: list[str] = []
     seen: set[str] = set()
     for raw in candidates:
