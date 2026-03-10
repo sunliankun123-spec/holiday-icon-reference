@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: holiday-icon-reference
+    runtime: python
+    plan: free
+    autoDeploy: true
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r app/requirements.txt
+      python -m playwright install chromium
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
