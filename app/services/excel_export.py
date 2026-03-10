@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import imghdr
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -44,9 +43,16 @@ def _download_preview(url: str) -> str | None:
             return None
 
         raw = resp.content
-        ext = imghdr.what(None, h=raw) or "jpg"
-        if ext == "jpeg":
-            ext = "jpg"
+        content_main = content_type.split(";")[0].strip()
+        ext_map = {
+            "image/jpeg": "jpg",
+            "image/jpg": "jpg",
+            "image/png": "png",
+            "image/webp": "webp",
+            "image/gif": "gif",
+            "image/bmp": "bmp",
+        }
+        ext = ext_map.get(content_main, "jpg")
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}")
         tmp.write(raw)
         tmp.flush()
