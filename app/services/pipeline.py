@@ -9,6 +9,7 @@ from typing import Callable
 from playwright.async_api import async_playwright
 import requests
 
+from .bing_images import collect_bing_urls_http
 from .duckduckgo_images import collect_duckduckgo_urls_http
 from .elements import build_50_elements
 from .excel_export import write_excel
@@ -151,11 +152,15 @@ def _collect_for_element_render(theme: str, element: str, limit: int) -> tuple[s
     chosen_query = queries[0]
 
     for query in queries:
-        urls = _collect_pinterest_urls_http(query, limit=limit)
+        # Render cloud IP is frequently blocked by Pinterest, so use open web engines first.
+        urls: list[str] = []
+        urls.extend(_collect_google_urls_http(query, limit=limit))
         if len(urls) < limit:
-            urls.extend(_collect_google_urls_http(query, limit=limit))
+            urls.extend(collect_bing_urls_http(query, limit=limit))
         if len(urls) < limit:
             urls.extend(collect_duckduckgo_urls_http(query, limit=limit))
+        if len(urls) < limit:
+            urls.extend(_collect_pinterest_urls_http(query, limit=limit))
         if urls:
             chosen_query = query
         for u in urls:
